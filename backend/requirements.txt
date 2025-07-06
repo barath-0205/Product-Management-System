@@ -1,0 +1,10 @@
+passlib[bcrypt]
+sqlalchemy
+fastapi
+uvicorn
+pydantic
+python-jose
+sqlalchemy-utils
+starlette
+requests
+bcrypt<4.1.0
