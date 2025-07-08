@@ -1,5 +1,6 @@
 from hmac import new
 from random import sample
+from re import A
 import stat
 from typing import Annotated, Optional
 
@@ -7,27 +8,40 @@ from fastapi import FastAPI, Depends, HTTPException
 from pydantic import BaseModel
 import model
 from model import Product, Supplier, User
-from database import SessionLocal, engine
+from database import engine, AsyncSessionLocal
 from sqlalchemy.orm import Session
 from starlette import status
 from pydantic import Field
 import auth
 from auth import hash_password
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.future import select
+from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
+from fastapi_cache import FastAPICache
+from fastapi_cache.backends.inmemory import InMemoryBackend
+from fastapi_cache.decorator import cache
 
 app = FastAPI()
 
-model.Base.metadata.create_all(bind=engine)
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/login")
 
-def get_db():
-    db = SessionLocal()
-    try:
+import asyncio
+
+async def create_tables():
+    async with engine.begin() as conn:
+        await conn.run_sync(model.Base.metadata.create_all)
+
+@app.on_event("startup")
+async def on_startup():
+    await create_tables()
+
+async def get_db():
+    async with AsyncSessionLocal() as db:
         yield db
-    finally:
-        db.close()
+
 
 user_dependency = Annotated[str, Depends(auth.get_current_user)]
-
-db_dependency = Annotated[Session, Depends(get_db)]
+db_dependency = Annotated[AsyncSession, Depends(get_db)]
 
 class UserLogin(BaseModel):
     email: str
@@ -115,36 +129,50 @@ class SupplierModel(BaseModel):
         }
     }
 
+@app.on_event("startup")
+async def startup():
+    FastAPICache.init(InMemoryBackend())
+
 @app.post("/register")
-def register(user: UserLogin, db: Session = Depends(get_db)):
-    hashed_pw = hash_password(user.password)
-    db_user = User(email=user.email, hashed_password=hashed_pw)
-    db.add(db_user)
-    db.commit()
-    return {"message": "User registered successfully"}
+async def register(user: UserLogin, db: db_dependency):
+    try:
+        hashed_pw = hash_password(user.password)
+        db_user = User(email=user.email, hashed_password=hashed_pw)
+        db.add(db_user)
+        await db.commit()
+        return {"message": "User registered successfully"}
+    except Exception as e:
+        db.rollback()
+        print("DB Error:", e)  # You can replace with proper logging
 
 @app.get("/users", status_code=status.HTTP_200_OK)
-def get_users(db: db_dependency):
-    users = db.query(User).all()
+async def get_users(db: db_dependency):
+    result = await db.execute(select(User))
+    users = result.scalars().all()
     return users
 
 @app.post("/login", response_model=Token)
-def login(user: UserLogin, db: Session = Depends(get_db)):
-    db_user = db.query(User).filter(User.email == user.email).first()
-    if not db_user or not auth.verify_password(user.password, db_user.hashed_password):
+async def login(db: db_dependency, form_data: OAuth2PasswordRequestForm = Depends()):
+    result = await db.execute(select(User))
+    result = await db.execute(select(User).where(User.email == form_data.username))
+    db_user = result.scalars().first()
+    if not db_user or not auth.verify_password(form_data.password, db_user.hashed_password):
         raise HTTPException(status_code=400, detail="Invalid credentials")
-
     token = auth.create_access_token({"sub": db_user.email})
     return {"access_token": token, "token_type": "bearer"}
 
 @app.get("/products", status_code=status.HTTP_200_OK)
+@cache(expire=60)
 async def get_products(db: db_dependency, user: user_dependency):
-    products = db.query(Product).all()
+    result = await db.execute(select(Product))
+    products = result.scalars().all()
     return products
 
 @app.get("/suppliers")
-async def get_suppliers(db: db_dependency):
-    suppliers = db.query(Supplier).all()
+@cache(expire=60)
+async def get_suppliers(db: db_dependency, user: user_dependency):
+    result = await db.execute(select(Supplier))
+    suppliers = result.scalars().all()
     return suppliers
 
 @app.post("/createProduct", status_code=status.HTTP_201_CREATED)
@@ -152,11 +180,11 @@ async def create_product(product: ProductModel, db: db_dependency, user: user_de
     try:
         new_product = Product(**product.model_dump())
         db.add(new_product)
-        db.commit()
-        db.refresh(new_product)
+        await db.commit()
+        await db.refresh(new_product)
         return new_product
     except Exception as e:
-        db.rollback()
+        await db.rollback()
         print("DB Error:", e)  # You can replace with proper logging
         raise HTTPException(status_code=500, detail="Internal Server Error")
 
@@ -170,15 +198,17 @@ async def create_supplier(supplier: SupplierModel, db: db_dependency, user: user
         email=supplier.email
     )
     db.add(new_supplier)
-    db.commit()
-    db.refresh(new_supplier)
-    supplierData = db.query(Supplier).all()
+    await db.commit()
+    await db.refresh(new_supplier)
+    result = await db.execute(select(Supplier))
+    supplierData = result.scalars().all()
     if supplierData is not None:
         return {"update": "Data inserted successfully", "data" : supplierData}
 
 @app.put("/updateProduct/{product_id}", response_model=ProductModel)
 async def update_product(product_id: int, updated_product: ProductModel, db: db_dependency, user: user_dependency):
-    product_model = db.query(Product).filter(Product.id == product_id).first()
+    result = await db.execute(select(Product).where(Product.id == product_id))
+    product_model = result.scalars().first()
     if product_model is None:
         raise HTTPException(status_code=404, detail="Product not found")
 
@@ -186,44 +216,51 @@ async def update_product(product_id: int, updated_product: ProductModel, db: db_
         if value is not None:
             setattr(product_model, key, value)
 
-    db.commit()
-    db.refresh(product_model)
-    productData = db.query(Product).all()
+    await db.commit()
+    await db.refresh(product_model)
+    result = await db.execute(select(Product))
+    productData = result.scalars().all()
     return {"update": "Data updated successfully", "data" : productData}
 
 @app.put("/updateSupplier/{supplier_id}")
-async def update_supplier(supplier_id: int, updated_supplier: SupplierModel, db: db_dependency):
-    supplier_model = db.query(Supplier).filter(Supplier.id == supplier_id).first()
+async def update_supplier(supplier_id: int, updated_supplier: SupplierModel, db: db_dependency, user: user_dependency):
+    result = await db.execute(select(Supplier).where(Supplier.id == supplier_id))
+    supplier_model = result.scalars().first()
     if supplier_model is None:
         raise HTTPException(status_code=404, detail= "Supplier not found")
 
-    for key, value in update_supplier.model_dump(exclude_unset=True).items():
+    for key, value in updated_supplier.model_dump(exclude_unset=True).items():
         setattr(supplier_model, key, value)
 
-    db.commit()
-    db.refresh(supplier_model)
-    supplier_data = db.query(Supplier).all()
+    await db.commit()
+    await db.refresh(supplier_model)
+    result = await db.execute(select(Supplier))
+    supplier_data = result.scalars().all()
     return {"update": "Data updated successfully", "data" : supplier_data}
 
 @app.delete("/deleteProduct/{product_id}")
-async def delete_product(product_id: int, db: db_dependency):
-    product_model = db.query(Product).filter(Product.id == product_id).first()
+async def delete_product(product_id: int, db: db_dependency, user: user_dependency):
+    result = await db.execute(select(Product).where(Product.id == product_id))
+    product_model = result.scalars().first()
     if product_model is None:
         raise HTTPException(status_code=404, detail="Product not found")
 
-    db.delete(product_model)
-    db.commit()
-    productData = db.query(Product).all()
+    await db.delete(product_model)
+    await db.commit()
+    result = await db.execute(select(Product))
+    productData = result.scalars().all()
     return  {"update": "Data deleted successfully", "data" : productData}
 
 @app.delete("/deleteSupplier/{supplier_id}")
-async def delete_supplier(supplier_id: int, db: db_dependency):
-    supplier_model = db.query(Product).filter(Supplier.id == supplier_id).first()
+async def delete_supplier(supplier_id: int, db: db_dependency, user: user_dependency):
+    result = await db.execute(select(Supplier).where(Supplier.id == supplier_id))
+    supplier_model = result.scalars().first()
     if supplier_model is None:
         raise HTTPException(status_code=404, detail="Supplier not found")
 
-    db.delete(supplier_model)
-    db.commit()
-    supplierData = db.query(Supplier).all()
+    await db.delete(supplier_model)
+    await db.commit()
+    result = await db.execute(select(Supplier))
+    supplierData = result.scalars().all()
     return  {"update": "Data deleted successfully", "data" : supplierData}
 
