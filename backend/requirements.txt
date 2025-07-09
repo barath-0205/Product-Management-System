@@ -9,4 +9,5 @@ starlette
 requests
 bcrypt<4.1.0
 aiosqlite
-fastapi_cache
+fastapi-cache2
+
