@@ -10,3 +10,4 @@ requests
 bcrypt<4.1.0
 matplotlib
 streamlit
+-e .
