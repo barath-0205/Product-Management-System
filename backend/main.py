@@ -6,7 +6,6 @@ from typing import Annotated, Optional
 
 from fastapi import FastAPI, Depends, HTTPException
 from pydantic import BaseModel
-import model
 from model import Product, Supplier, User
 from database import engine, AsyncSessionLocal
 from sqlalchemy.orm import Session
