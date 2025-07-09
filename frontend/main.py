@@ -10,15 +10,24 @@ if 'token' not in st.session_state:
 if 'user_email' not in st.session_state:
     st.session_state.user_email = None
 
+def register_user(email, password):
+    res = requests.post(f"{API_URL}/register", json={"email": email, "password": password})
+    return res
+
 def login(email, password):
-    response = requests.post(f"{API_URL}/login", data={"username": email, "password": password})
+    response = requests.post(
+        f"{API_URL}/login",
+        data={"username": email, "password": password},
+        headers={"Content-Type": "application/x-www-form-urlencoded"}
+    )
     if response.status_code == 200:
-        token = response.json()['access_token']
-        st.session_state.token = token
-        st.session_state.user_email = email
+        token = response.json()["access_token"]
+        st.session_state["logged_in"] = True
+        st.session_state["token"] = token
         st.success("Login successful!")
+        st.rerun()
     else:
-        st.error("Login failed")
+        st.error("Invalid email or password")
 
 def get_headers():
     return {"Authorization": f"Bearer {st.session_state.token}"} if st.session_state.token else {}
@@ -44,13 +53,35 @@ def delete_data(endpoint):
 
 # --- Login Section ---
 if not st.session_state.token:
-    st.title("Inventory Management Login")
-    with st.form("login_form"):
-        email = st.text_input("Email")
-        password = st.text_input("Password", type="password")
-        submitted = st.form_submit_button("Login")
-        if submitted:
-            login(email, password)
+    tab1, tab2 = st.tabs(["🔐 Login", "📝 Register"])
+
+    with tab1:
+        with st.form("login_form"):
+            email = st.text_input("Email")
+            password = st.text_input("Password", type="password")
+            submitted = st.form_submit_button("Login")
+            if submitted:
+                login(email, password)
+
+    with tab2:
+        with st.form("register_form"):
+            new_email = st.text_input("New Email")
+            new_password = st.text_input("New Password", type="password")
+            register_btn = st.form_submit_button("Register")
+            if register_btn:
+                response = requests.post(
+                    f"{API_URL}/register",
+                    json={"email": new_email, "password": new_password}
+                )
+                if response.status_code == 200:
+                    st.success("Registration successful! Please log in.")
+                else:
+                    try:
+                        detail = response.json().get("detail", "Registration failed.")
+                    except:
+                        detail = "Registration failed."
+                    st.error(detail)
+
     st.stop()
 
 # --- Main Dashboard ---
@@ -162,7 +193,7 @@ elif selection == "Suppliers":
                 try:
                     error_detail = res.json().get("detail", "Unknown error")
                 except requests.exceptions.JSONDecodeError:
-                    error_detail = f"Non-JSON response: {res.text}"  # fallback to raw text
+                    error_detail = f"Non-JSON response: {res.text}"
 
                 st.error(error_detail)
 
