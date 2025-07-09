@@ -3,10 +3,10 @@ from random import sample
 from re import A
 import stat
 from typing import Annotated, Optional
-
+import .model
 from fastapi import FastAPI, Depends, HTTPException
 from pydantic import BaseModel
-from model import Product, Supplier, User
+from .model import Product, Supplier, User
 from database import engine, AsyncSessionLocal
 from sqlalchemy.orm import Session
 from starlette import status
