@@ -10,4 +10,4 @@ requests
 bcrypt<4.1.0
 aiosqlite
 fastapi-cache2
-
+python-multipart
