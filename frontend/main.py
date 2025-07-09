@@ -3,7 +3,7 @@ import requests
 import pandas as pd
 import matplotlib.pyplot as plt
 
-API_URL = "http://localhost:8000"  # Replace with your actual API base URL
+API_URL = "https://product-management-system-7.onrender.com"
 
 if 'token' not in st.session_state:
     st.session_state.token = None
